@@ -1,0 +1,103 @@
+# ═══════════════════════════════════════════════════════════════
+# ZenCalendar — GitHub Actions: Build Android Debug APK
+# ═══════════════════════════════════════════════════════════════
+# Triggers on every push to main/master and on manual dispatch.
+# Downloads the APK from the "Artifacts" section of the Actions run.
+# ═══════════════════════════════════════════════════════════════
+
+name: Build ZenCalendar APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:          # manual trigger from the Actions tab
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout the repository ──────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Java 17 (required by Android Gradle Plugin 8.x) ─
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # ── 3. Set up Node.js 20 ──────────────────────────────────────
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ── 4. Set up Android SDK (command-line tools + sdkmanager) ───
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # ── 5. Install required Android SDK components ─────────────────
+      - name: Install Android SDK platform 34 and build tools
+        run: |
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          yes | sdkmanager --licenses 2>/dev/null || true
+
+      # ── 6. Install Capacitor npm dependencies ──────────────────────
+      - name: Install npm dependencies
+        working-directory: android-app
+        run: npm install
+
+      # ── 7. Add the Android platform (creates android/ folder) ──────
+      - name: Add Capacitor Android platform
+        working-directory: android-app
+        run: npx cap add android
+
+      # ── 7.5 Configure Android Permissions ──────────────────────────
+      - name: Configure Android permissions
+        run: |
+          python3 -c "
+          path = 'android-app/android/app/src/main/AndroidManifest.xml'
+          with open(path, 'r') as f: content = f.read()
+          permissions = '''
+              <uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />
+              <uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\" />
+              <uses-permission android:name=\"android.permission.WRITE_EXTERNAL_STORAGE\" />
+          '''
+          if '<uses-permission' in content:
+              parts = content.split('<uses-permission', 1)
+              new_content = parts[0] + permissions.strip() + '\n    <uses-permission' + parts[1]
+          else:
+              parts = content.split('<application', 1)
+              new_content = parts[0] + permissions + '    <application' + parts[1]
+          with open(path, 'w') as f: f.write(new_content)
+          print('Successfully configured permissions in AndroidManifest.xml')
+          "
+
+      # ── 8. Sync web assets (www/) into the Android project ─────────
+      - name: Sync web assets to Android project
+        working-directory: android-app
+        run: npx cap sync android
+
+      # ── 9. Make Gradle wrapper executable ──────────────────────────
+      - name: Make Gradle wrapper executable
+        run: chmod +x android-app/android/gradlew
+
+      # ── 10. Build the debug APK ─────────────────────────────────────
+      - name: Build debug APK
+        working-directory: android-app/android
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME }}
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      # ── 11. Upload APK as a downloadable artifact ───────────────────
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZenCalendar-debug-apk
+          path: android-app/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+          if-no-files-found: error
